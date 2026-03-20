@@ -108,7 +108,7 @@
 
 1. **Connect to WiFi**: 
    - On first boot, the device starts an Access Point named `CW-Trainer-XXXX`.
-   - Connect to it and navigate to `http://192.168.4.1` in your browser.
+   - Connect to it and navigate to `http://cw-trainer.local/` in your browser.
 2. **Training**:
    - Choose **Koch Sequence** to learn new characters.
    - Choose **Single Character** to practice specific ones.
