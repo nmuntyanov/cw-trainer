@@ -1,0 +1,46 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.1
+          target: esp32
+          path: '.'
+
+      - name: Package Binaries
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p release_assets
+          cp build/cw_trainer.bin release_assets/
+          cp build/bootloader/bootloader.bin release_assets/
+          cp build/partition_table/partition-table.bin release_assets/
+          # Optional: Create a merged binary for easier flashing
+          # esptool.py --chip esp32 merge_bin -o release_assets/cw_trainer_merged.bin --fill-flash-size 4MB 0x1000 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/cw_trainer.bin
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_assets/cw_trainer.bin
+            release_assets/bootloader.bin
+            release_assets/partition-table.bin
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

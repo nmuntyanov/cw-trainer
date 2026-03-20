@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CW Trainer Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0c10;
+            --glass: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent: #4f46e5;
+            --accent-hover: #6366f1;
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1, h2 { font-family: 'Outfit', sans-serif; }
+        h1 { margin-bottom: 2rem; background: linear-gradient(90deg, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2.5rem; }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .card {
+            background: var(--glass);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card:hover { transform: translateY(-4px); box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+
+        .card-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; }
+
+        .full-width { grid-column: span 2; }
+
+        label { display: block; margin-bottom: 0.5rem; color: var(--text-dim); font-size: 0.875rem; }
+        input, select {
+            width: 100%;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--glass-border);
+            border-radius: 0.75rem;
+            padding: 0.75rem;
+            color: white;
+            margin-bottom: 1rem;
+            outline: none;
+        }
+        input:focus { border-color: var(--accent); }
+
+        button {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 0.75rem;
+            padding: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: var(--accent-hover); }
+        button.secondary { background: rgba(255,255,255,0.1); }
+        button.danger { background: #dc2626; }
+
+        .status { font-size: 0.875rem; color: #22c55e; margin-top: 1rem; font-weight: 500; }
+
+        /* Koch Trainer specific */
+        .koch-display {
+            font-size: 6rem;
+            font-weight: 800;
+            color: var(--accent);
+            text-align: center;
+            margin: 2rem 0;
+            min-height: 120px;
+            min-width: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255,255,255,0.05);
+            border-radius: 2rem;
+        }
+        .morse-feedback {
+            font-size: 3rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            text-align: center;
+            min-height: 4.5rem;
+            min-width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CW Trainer Pro</h1>
+
+    <div class="container">
+        <!-- WiFi Settings -->
+        <div class="card">
+            <div class="card-title">📡 Network</div>
+            <div id="sta-info" style="margin-bottom: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 1rem; border: 1px solid var(--glass-border);">
+                <div style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;">Connected To</div>
+                <div id="current-ssid" style="font-size: 1.1rem; font-weight: 600;">Not Connected</div>
+                <div id="ap-status-badge" style="display:inline-block; margin-top: 0.5rem; padding: 0.2rem 0.5rem; border-radius: 0.5rem; font-size: 0.7rem; background: #22c55e;">AP ENABLED</div>
+            </div>
+            
+            <label>AP Mode Control</label>
+            <button id="ap-toggle-btn" onclick="toggleAP()" class="secondary" style="margin-bottom: 1.5rem;">Disable Access Point</button>
+
+            <label>Scan Networks</label>
+            <button onclick="scanWifi()" class="secondary">Scan Nearby</button>
+            <div id="networks" style="margin: 1rem 0; max-height: 120px; overflow-y: auto;"></div>
+            <input type="text" id="ssid" placeholder="Manual SSID">
+            <input type="password" id="pass" placeholder="Password">
+            <button onclick="connectWifi()">Connect</button>
+            <div id="wifi-status" class="status"></div>
+        </div>
+
+        <!-- Audio Settings -->
+        <div class="card">
+            <div class="card-title">🔊 Audio & System</div>
+            <label>Volume Boost (0 to +4.5dB)</label>
+            <input type="range" id="vol" min="0" max="33" value="30" oninput="updateVolume()">
+            <label>Tone Frequency (Hz)</label>
+            <input type="number" id="freq" value="600" min="300" max="1500" step="50" onchange="updateFreq()">
+            <label>Training Speed (WPM)</label>
+            <input type="range" id="wpm" min="5" max="40" value="20" oninput="updateWPM()">
+            <span id="wpm-val" style="font-size: 0.8rem; color: var(--text-dim);">20 WPM</span>
+            <button onclick="factoryReset()" class="danger" style="margin-top: 1rem;">Factory Reset</button>
+        </div>
+
+        <!-- Training -->
+        <div class="card full-width">
+            <div class="card-title">🎓 Morse Trainer</div>
+            <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 2rem;">
+                <div>
+                    <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                        <div style="flex: 1;">
+                            <label>Mode</label>
+                            <select id="train-mode" onchange="updateModeUI()">
+                                <option value="koch">Koch Sequence</option>
+                                <option value="single">Single Character</option>
+                            </select>
+                        </div>
+                        <div style="flex: 1; display: none;" id="single-char-container">
+                            <label>Practice Char</label>
+                            <select id="single-char-select"></select>
+                        </div>
+                    </div>
+
+                    <div id="koch-container">
+                        <label>Koch Level (1-40 chars)</label>
+                        <input type="range" id="level" min="1" max="40" value="2" oninput="updateLevel()">
+                        <div id="level-chars" style="font-size: 0.8rem; color: var(--accent); margin-bottom: 1rem; word-break: break-all;">Level 2: K, M</div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; background: rgba(255,255,255,0.05); padding: 0.75rem; border-radius: 0.75rem;">
+                         <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="sound-assistant" style="width: auto; margin: 0;" checked>
+                            <label style="margin: 0;">Sound Assistant (Audio Hint)</label>
+                         </div>
+                         <button id="replay-btn" onclick="replaySound()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; margin: 0; width: auto; display: none;">Replay</button>
+                    </div>
+
+                    <button id="session-btn" onclick="toggleTraining()">Start Training</button>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 1.5rem; border-radius: 1.5rem; display: flex; flex-direction: column; gap: 1rem; justify-content: center;">
+                    <div>
+                        <div style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; margin-bottom: 0.2rem; text-align: center;">Accuracy</div>
+                        <div style="font-size: 2.5rem; font-weight: 700; text-align: center; color: var(--accent);" id="stat-accuracy">100%</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; margin-bottom: 0.2rem; text-align: center;">Rhythm</div>
+                        <div style="background: rgba(255,255,255,0.1); height: 8px; border-radius: 4px; overflow: hidden; width: 100px; margin: 0 auto;">
+                            <div id="rhythm-bar" style="width: 100%; height: 100%; background: var(--accent); transition: width 0.3s, background 0.3s;"></div>
+                        </div>
+                        <div style="font-size: 0.8rem; text-align: center; margin-top: 0.2rem;" id="rhythm-val">100%</div>
+                    </div>
+                    <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center;" id="stat-counts">0 / 0</div>
+                </div>
+            </div>
+            
+            <div class="koch-display" id="char-to-type">?</div>
+            <div class="morse-feedback" id="morse-input"></div>
+            <div id="training-log" style="margin-top: 1rem; color: var(--text-dim); font-size: 0.875rem; text-align: center;">Press Start to begin.</div>
+        </div>
+       <script>
+        let ws;
+        let currentTargetChar = '';
+        let sessionActive = false;
+        let currentLevel = 2;
+        let total = 0;
+        let correct = 0;
+        let apEnabled = true;
+        let staConnected = false;
+
+        async function updateStatus() {
+            try {
+                const status = await fetchAPI('/system/status');
+                document.getElementById('current-ssid').innerText = status.sta_ssid || (status.sta_connected ? 'Connected' : 'Not Connected');
+                staConnected = status.sta_connected;
+                apEnabled = status.ap_enabled;
+                
+                const apBadge = document.getElementById('ap-status-badge');
+                apBadge.innerText = apEnabled ? 'AP ENABLED' : 'AP DISABLED';
+                apBadge.style.background = apEnabled ? '#22c55e' : '#64748b';
+                
+                const apBtn = document.getElementById('ap-toggle-btn');
+                apBtn.innerText = apEnabled ? 'Disable Access Point' : 'Enable Access Point';
+                apBtn.disabled = !staConnected && apEnabled;
+
+                // One-time population of character list
+                const scSelect = document.getElementById('single-char-select');
+                if (scSelect.options.length === 0 && status.koch_chars) {
+                    status.koch_chars.split('').forEach(c => {
+                        const opt = document.createElement('option');
+                        opt.value = opt.text = c;
+                        scSelect.add(opt);
+                    });
+                }
+            } catch (e) { console.error('Status check failed', e); }
+        }
+        setInterval(updateStatus, 5000);
+
+        function setupWebSocket() {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                document.getElementById('wifi-status').innerText = 'Connected to Trainer';
+                document.getElementById('wifi-status').style.color = '#22c55e';
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMorseInput(data.char, data.score);
+                } catch (e) {
+                    handleMorseInput(event.data, 0); // Fallback
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wifi-status').innerText = 'Reconnecting...';
+                document.getElementById('wifi-status').style.color = '#ef4444';
+                setTimeout(setupWebSocket, 2000);
+            };
+        }
+        setupWebSocket();
+
+        async function fetchAPI(endpoint, data = null) {
+            const options = data ? {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            } : {};
+            return fetch('/api' + endpoint, options).then(r => r.json());
+        }
+
+        function updateModeUI() {
+            const mode = document.getElementById('train-mode').value;
+            document.getElementById('koch-container').style.display = mode === 'koch' ? 'block' : 'none';
+            document.getElementById('single-char-container').style.display = mode === 'single' ? 'block' : 'none';
+            
+            const scSelect = document.getElementById('single-char-select');
+            scSelect.onchange = () => { if (sessionActive) nextTrainingChar(); };
+        }
+
+        async function toggleAP() {
+            await fetchAPI('/system/ap_toggle', { enabled: !apEnabled });
+            updateStatus();
+        }
+
+        async function updateVolume() {
+            fetchAPI('/settings', { volume: parseInt(document.getElementById('vol').value) });
+        }
+
+        async function updateFreq() {
+            fetchAPI('/settings', { freq: parseInt(document.getElementById('freq').value) });
+        }
+
+        async function scanWifi() {
+            const nets = await fetchAPI('/wifi/scan');
+            const div = document.getElementById('networks');
+            div.innerHTML = nets.map(n => `<div style="padding:0.75rem; cursor:pointer; border-bottom:1px solid var(--glass-border); border-radius:0.5rem; margin-bottom:0.2rem; background:rgba(255,255,255,0.03);" onclick="document.getElementById('ssid').value='${n.ssid}'">${n.ssid} <span style="float:right; color:var(--text-dim)">${n.rssi} dBm</span></div>`).join('');
+        }
+
+        async function connectWifi() {
+            const ssid = document.getElementById('ssid').value;
+            const pass = document.getElementById('pass').value;
+            await fetchAPI('/wifi/connect', { ssid, pass });
+            updateStatus();
+        }
+
+        function updateLevel() {
+            currentLevel = document.getElementById('level').value;
+            const KOCH_ORDER = "KMRSUAPTLOWIJEF0YVGC5/QN.DH8B64Z73219?,";
+            const chars = KOCH_ORDER.slice(0, currentLevel).split('').join(', ');
+            document.getElementById('level-chars').innerText = `Level ${currentLevel}: ${chars}`;
+        }
+
+        async function updateWPM() {
+            const w = document.getElementById('wpm').value;
+            document.getElementById('wpm-val').innerText = `${w} WPM`;
+            fetchAPI('/settings', { wpm: parseInt(w) });
+        }
+
+        function factoryReset() {
+            if(confirm('Are you sure? This will wipe all settings including WiFi.')) {
+                fetchAPI('/reset');
+            }
+        }
+
+        function toggleTraining() {
+            sessionActive = !sessionActive;
+            const btn = document.getElementById('session-btn');
+            const replay = document.getElementById('replay-btn');
+            const display = document.getElementById('char-to-type');
+            const feedback = document.getElementById('morse-input');
+            
+            if (sessionActive) {
+                btn.innerText = 'Stop Session';
+                btn.classList.add('danger');
+                display.style.display = 'flex';
+                feedback.style.display = 'block';
+                if (document.getElementById('sound-assistant').checked) replay.style.display = 'block';
+                total = 0; correct = 0;
+                updateStats();
+                nextTrainingChar();
+            } else {
+                btn.innerText = 'Start Training';
+                btn.classList.remove('danger');
+                display.innerText = '?';
+                feedback.innerText = '';
+                replay.style.display = 'none';
+                currentTargetChar = '';
+                morse_logic_set_target(0);
+                updateStats();
+            }
+        }
+
+        function updateStats() {
+            const acc = total === 0 ? 100 : Math.round((correct / total) * 100);
+            document.getElementById('stat-accuracy').innerText = acc + '%';
+            document.getElementById('stat-counts').innerText = `${correct} / ${total}`;
+        }
+
+        async function replaySound() {
+            if (currentTargetChar) await fetchAPI('/training/play', { char: currentTargetChar });
+        }
+
+        async function nextTrainingChar() {
+            if (!sessionActive) return;
+            
+            const mode = document.getElementById('train-mode').value;
+            if (mode === 'single') {
+                currentTargetChar = document.getElementById('single-char-select').value;
+            } else {
+                const KOCH_ORDER = "KMRSUAPTLOWIJEF0YVGC5/QN.DH8B64Z73219?,";
+                const pool = KOCH_ORDER.slice(0, currentLevel);
+                currentTargetChar = pool[Math.floor(Math.random() * pool.length)];
+            }
+            
+            document.getElementById('char-to-type').innerText = currentTargetChar;
+            document.getElementById('morse-input').innerText = '';
+
+            await fetchAPI('/training/target', { char: currentTargetChar });
+            if (document.getElementById('sound-assistant').checked) {
+                await fetchAPI('/training/play', { char: currentTargetChar });
+            }
+        }
+
+        function handleMorseInput(char, score) {
+            if (!char) return;
+            const feedback = document.getElementById('morse-input');
+            
+            if (!sessionActive) {
+                feedback.innerText += char;
+                return;
+            }
+            
+            // Update rhythm display
+            if (score > 0) {
+                document.getElementById('rhythm-bar').style.width = score + '%';
+                document.getElementById('rhythm-val').innerText = score + '%';
+                document.getElementById('rhythm-bar').style.background = score > 80 ? '#22c55e' : (score > 60 ? '#f59e0b' : '#ef4444');
+            }
+
+            total++;
+            if (char === currentTargetChar) {
+                correct++;
+                feedback.style.color = '#22c55e';
+                feedback.innerText = char;
+                setTimeout(() => {
+                    feedback.style.color = '';
+                    nextTrainingChar();
+                }, 500);
+            } else {
+                feedback.style.color = '#ef4444';
+                feedback.innerText = char;
+            }
+            updateStats();
+        }
+
+        window.onload = () => {
+            updateStatus();
+            updateLevel();
+            updateModeUI();
+        };
+    </script>
+</body>
+</html>
