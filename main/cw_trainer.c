@@ -16,6 +16,7 @@
 #include <inttypes.h>
 #include "esp_timer.h"
 #include "esp_timer.h"
+#include <math.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
@@ -82,25 +83,74 @@ static i2s_chan_handle_t tx_chan;
 uint32_t freq = TONE_FREQ_HZ;
 uint8_t vol_val = 30;
 uint32_t wpm = 20;
+uint8_t noise_level = 0;
+char callsign[16] = "CALLSIGN";
+char qth_locator[16] = "LOCATOR";
 float phase_step = 0.0f;
 
 /* Playback state machine */
+typedef enum {
+    PB_IDLE,
+    PB_TONE,
+    PB_ELEMENT_GAP,
+    PB_CHAR_GAP,
+    PB_WORD_GAP
+} pb_state_t;
+
+static char pb_string[64];
+static int pb_str_idx = 0;
 static const char *pb_seq = NULL;
-static int pb_idx = 0;
-static int pb_blocks_left = 0;
 static bool pb_active = false;
 static bool pb_is_tone = false;
+static uint32_t pb_blocks_left = 0;
+static pb_state_t pb_state = PB_IDLE;
+
+/* Biquad Filter for Realistic Noise */
+typedef struct {
+    float b0, b1, b2, a1, a2;
+    float x1, x2, y1, y2;
+} biquad_t;
+static biquad_t noise_filter;
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
+static void update_filter_coeffs(uint32_t f0)
+{
+    float Fs = (float)I2S_SAMPLE_RATE;
+    float Q = 2.0f; // Narrowness of the filter
+    float omega = 2.0f * M_PI * (float)f0 / Fs;
+    float alpha = sinf(omega) / (2.0f * Q);
+    float a0 = 1.0f + alpha;
+    
+    noise_filter.b0 = alpha / a0;
+    noise_filter.b1 = 0.0f;
+    noise_filter.b2 = -alpha / a0;
+    noise_filter.a1 = (-2.0f * cosf(omega)) / a0;
+    noise_filter.a2 = (1.0f - alpha) / a0;
+    
+    // Reset state
+    noise_filter.x1 = noise_filter.x2 = noise_filter.y1 = noise_filter.y2 = 0.0f;
+}
 
 void trigger_playback(char c)
 {
-    pb_seq = morse_logic_get_sequence(c);
-    if (pb_seq && strlen(pb_seq) > 0) {
-        pb_idx = 0;
-        pb_active = true;
-        pb_blocks_left = 0; // Trigger immediate next bit logic
-        pb_is_tone = false;
-        ESP_LOGI(TAG, "Playing [%c] sequence: %s", c, pb_seq);
-    }
+    char s[2] = {c, '\0'};
+    trigger_playback_string(s);
+}
+
+void trigger_playback_string(const char* s)
+{
+    if (!s) return;
+    strncpy(pb_string, s, sizeof(pb_string)-1);
+    pb_string[sizeof(pb_string)-1] = '\0';
+    pb_str_idx = 0;
+    pb_seq = NULL;
+    pb_state = PB_IDLE; // Reset state machine
+    pb_blocks_left = 0;
+    pb_active = true;
+    ESP_LOGI(TAG, "Triggered string playback: %s", pb_string);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -163,23 +213,27 @@ static esp_err_t init_i2c(void)
     return ESP_OK;
 }
 
-static void save_settings(uint32_t f, uint8_t v, uint32_t w)
+static void save_settings(uint32_t f, uint8_t v, uint32_t w, uint8_t n, const char* c, const char* q)
 {
     nvs_handle_t h;
     if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u32(h, "freq", f);
         nvs_set_u8(h, "vol", v);
         nvs_set_u32(h, "wpm", w);
+        nvs_set_u8(h, "noise", n);
+        if (c) nvs_set_str(h, "callsign", c);
+        if (q) nvs_set_str(h, "qth", q);
         nvs_commit(h);
         nvs_close(h);
     }
 }
 
-void update_settings(uint32_t new_freq, uint8_t new_vol, uint32_t new_wpm)
+void update_settings(uint32_t new_freq, uint8_t new_vol, uint32_t new_wpm, uint8_t new_noise, const char* new_callsign, const char* new_qth)
 {
     if (new_freq >= 300 && new_freq <= 1500) {
         freq = new_freq;
         phase_step = (float)SINE_TABLE_SIZE * freq / I2S_SAMPLE_RATE;
+        update_filter_coeffs(freq);
     }
     if (new_vol <= 33) {
         vol_val = new_vol;
@@ -192,11 +246,27 @@ void update_settings(uint32_t new_freq, uint8_t new_vol, uint32_t new_wpm)
         wpm = new_wpm;
         morse_logic_init(wpm);
     }
-    save_settings(freq, vol_val, wpm);
-    ESP_LOGI(TAG, "Settings updated: Freq=%"PRIu32"Hz, Vol=%d, WPM=%"PRIu32, freq, vol_val, wpm);
+    if (new_noise <= 100) {
+        noise_level = new_noise;
+    }
+    if (new_callsign) {
+        strncpy(callsign, new_callsign, sizeof(callsign)-1);
+        callsign[sizeof(callsign)-1] = '\0';
+    }
+    if (new_qth) {
+        strncpy(qth_locator, new_qth, sizeof(qth_locator)-1);
+        qth_locator[sizeof(qth_locator)-1] = '\0';
+    }
+    /* Broadcast update to web UI via WebSocket */
+    char update_json[128];
+    snprintf(update_json, sizeof(update_json), "{\"volume\":%d,\"freq\":%"PRIu32"}", vol_val, freq);
+    web_server_broadcast(update_json);
+
+    save_settings(freq, vol_val, wpm, noise_level, callsign, qth_locator);
+    ESP_LOGI(TAG, "Settings updated: Freq=%"PRIu32"Hz, Vol=%d, WPM=%"PRIu32", Noise=%d, CS=%s, QTH=%s", freq, vol_val, wpm, noise_level, callsign, qth_locator);
 }
 
-static void load_settings(uint32_t *_freq, uint8_t *_vol, uint32_t *_wpm)
+static void load_settings(uint32_t *_freq, uint8_t *_vol, uint32_t *_wpm, uint8_t *_noise, char *_callsign, char *_qth)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open("storage", NVS_READONLY, &h);
@@ -204,9 +274,19 @@ static void load_settings(uint32_t *_freq, uint8_t *_vol, uint32_t *_wpm)
         uint32_t f;
         uint8_t v;
         uint32_t w;
+        uint8_t n;
+        size_t cs_len = 16;
+        size_t qth_len = 16;
         if (nvs_get_u32(h, "freq", &f) == ESP_OK) *_freq = f;
         if (nvs_get_u8(h, "vol", &v) == ESP_OK) *_vol = v;
         if (nvs_get_u32(h, "wpm", &w) == ESP_OK) *_wpm = w;
+        if (nvs_get_u8(h, "noise", &n) == ESP_OK) *_noise = n;
+        if (nvs_get_str(h, "callsign", _callsign, &cs_len) != ESP_OK) {
+            strcpy(_callsign, "CALLSIGN");
+        }
+        if (nvs_get_str(h, "qth", _qth, &qth_len) != ESP_OK) {
+            strcpy(_qth, "LOCATOR");
+        }
         nvs_close(h);
         ESP_LOGI(TAG, "Settings loaded from NVS");
     } else {
@@ -380,8 +460,9 @@ void app_main(void)
     ESP_ERROR_CHECK(init_i2s());
 
     /* 3. Load settings AND apply to hardware */
-    load_settings(&freq, &vol_val, &wpm);
-    update_settings(freq, vol_val, wpm);
+    load_settings(&freq, &vol_val, &wpm, &noise_level, callsign, qth_locator);
+    update_settings(freq, vol_val, wpm, noise_level, callsign, qth_locator);
+    update_filter_coeffs(freq);
     ESP_LOGI(TAG, "Current settings: Freq %"PRIu32" Hz, Vol index %d, WPM %"PRIu32, freq, (int)vol_val, wpm);
 
     /* Phase 3: Morse Logic (depends on loaded WPM) */
@@ -422,26 +503,26 @@ void app_main(void)
         /* KEY6: vol up */
         if (gpio_get_level(BUTTON_6_IO) == 0 && vol_val < 33 &&
             (now_ms - last_vol_ms) > VOL_DEBOUNCE_MS) {
-            update_settings(freq, vol_val + 1, wpm);
+            update_settings(freq, vol_val + 1, wpm, noise_level, NULL, NULL);
             last_vol_ms = now_ms;
         }
         /* KEY5: vol down */
         if (gpio_get_level(BUTTON_5_IO) == 0 && vol_val > 0 &&
             (now_ms - last_vol_ms) > VOL_DEBOUNCE_MS) {
-            update_settings(freq, vol_val - 1, wpm);
+            update_settings(freq, vol_val - 1, wpm, noise_level, NULL, NULL);
             last_vol_ms = now_ms;
         }
 
         /* KEY4: freq up */
         if (gpio_get_level(BUTTON_4_IO) == 0 && freq < 1200 &&
             (now_ms - last_freq_ms) > FREQ_DEBOUNCE_MS) {
-            update_settings(freq + 50, vol_val, wpm);
+            update_settings(freq + 50, vol_val, wpm, noise_level, NULL, NULL);
             last_freq_ms = now_ms;
         }
         /* KEY3: freq down */
         if (gpio_get_level(BUTTON_3_IO) == 0 && freq > 300 &&
             (now_ms - last_freq_ms) > FREQ_DEBOUNCE_MS) {
-            update_settings(freq - 50, vol_val, wpm);
+            update_settings(freq - 50, vol_val, wpm, noise_level, NULL, NULL);
             last_freq_ms = now_ms;
         }
 
@@ -449,31 +530,89 @@ void app_main(void)
         bool key1_now = (gpio_get_level(BUTTON_1_IO) == 0) || (gpio_get_level(EXT_KEY_IO) == 0);
         bool pb_tone_now = false;
 
+        /* String Playback Logic (State Machine) */
         if (pb_active) {
-            if (pb_blocks_left <= 0) {
-                if (pb_is_tone) {
-                    /* Just finished a dot/dash, now play the intra-character gap (1 unit) */
-                    pb_is_tone = false;
-                    pb_blocks_left = (1200 / wpm) * I2S_SAMPLE_RATE / (256 * 1000); 
-                    pb_idx++;
-                } else {
-                    /* Finished a gap, now play next symbol or stop */
-                    if (pb_seq[pb_idx] == '\0') {
-                        pb_active = false;
-                        ESP_LOGI(TAG, "Playback finished");
-                    } else {
-                        pb_is_tone = true;
-                        int units = (pb_seq[pb_idx] == '.') ? 1 : 3;
-                        pb_blocks_left = (units * 1200 / wpm) * I2S_SAMPLE_RATE / (256 * 1000);
-                    }
+            if (pb_blocks_left == 0) {
+                uint32_t dot_ms = 1200 / wpm;
+                uint32_t dot_blocks = dot_ms * I2S_SAMPLE_RATE / (256 * 1000);
+
+                switch (pb_state) {
+                    case PB_IDLE:
+                        pb_str_idx = 0;
+                        pb_state = PB_CHAR_GAP; // Start with a small gap
+                        pb_blocks_left = 1; 
+                        break;
+
+                    case PB_TONE:
+                        /* Finished a dot or dash. Every element is followed by 1 dot gap. */
+                        pb_is_tone = false;
+                        pb_blocks_left = dot_blocks;
+                        pb_state = PB_ELEMENT_GAP;
+                        break;
+
+                    case PB_ELEMENT_GAP:
+                        /* Finished gap after pulse. Check if character is done. */
+                        if (pb_seq && *pb_seq != '\0') {
+                            /* Next pulse in current character */
+                            char pulse = *pb_seq++;
+                            pb_is_tone = true;
+                            pb_blocks_left = (pulse == '.') ? dot_blocks : dot_blocks * 3;
+                            pb_state = PB_TONE;
+                        } else {
+                            /* Character done. Gap between characters is 3 dots total (already had 1). */
+                            pb_is_tone = false;
+                            pb_blocks_left = dot_blocks * 2;
+                            pb_state = PB_CHAR_GAP;
+                        }
+                        break;
+
+                    case PB_CHAR_GAP:
+                    case PB_WORD_GAP:
+                        /* Gap finished, try next character in string */
+                        {
+                            char c = pb_string[pb_str_idx];
+                            if (c == '\0') {
+                                pb_active = false;
+                                pb_state = PB_IDLE;
+                            } else {
+                                pb_str_idx++;
+                                if (c == ' ') {
+                                    /* Already had some gap, word gap is 7 dots total. */
+                                    pb_is_tone = false;
+                                    pb_blocks_left = dot_blocks * 7;
+                                    pb_state = PB_WORD_GAP;
+                                } else {
+                                    pb_seq = morse_logic_get_sequence(c);
+                                    if (pb_seq && *pb_seq != '\0') {
+                                        char pulse = *pb_seq++;
+                                        pb_is_tone = true;
+                                        pb_blocks_left = (pulse == '.') ? dot_blocks : dot_blocks * 3;
+                                        pb_state = PB_TONE;
+                                    } else {
+                                        /* Skip unknown char, wait 1 dot */
+                                        pb_blocks_left = dot_blocks;
+                                        pb_state = PB_CHAR_GAP;
+                                    }
+                                }
+                            }
+                        }
+                        break;
                 }
             }
-            if (pb_active && pb_is_tone) pb_tone_now = true;
-            pb_blocks_left--;
+            if (pb_active) {
+                if (pb_is_tone) pb_tone_now = true;
+                if (pb_blocks_left > 0) pb_blocks_left--;
+            }
         }
 
         if (key1_now != key1_pressed) {
             char c = morse_logic_handle_key(key1_now, now_ms);
+            
+            /* Broadcast current bit sequence for real-time visual feedback */
+            char mb[64];
+            snprintf(mb, sizeof(mb), "{\"morse\":\"%s\"}", morse_logic_get_current_bits());
+            web_server_broadcast(mb);
+
             if (c) {
                 ESP_LOGI(TAG, "Decoded: [%c] Score: %d", c, morse_logic_get_match_score());
                 char b[64];
@@ -483,13 +622,32 @@ void app_main(void)
             key1_pressed = key1_now;
         }
 
-        if (key1_now || pb_tone_now) {
+        if (key1_now || pb_tone_now || noise_level > 0) {
+            static uint32_t seed = 0x12345678;
             for (int i = 0; i < 256; i++) {
-                int16_t s = sine_table[(int)phase & (SINE_TABLE_SIZE - 1)];
-                buf[i * 2]     = s;
-                buf[i * 2 + 1] = s;
-                phase += phase_step;
-                if (phase >= SINE_TABLE_SIZE) phase -= SINE_TABLE_SIZE;
+                /* White noise generation (LFSR-like) */
+                seed = seed * 1103515245 + 12345;
+                float raw_noise = ((float)((int32_t)(seed >> 16) - 32768) / 32768.0f);
+                
+                /* Apply Biquad Bandpass Filter */
+                float filtered = noise_filter.b0 * raw_noise + noise_filter.b1 * noise_filter.x1 + noise_filter.b2 * noise_filter.x2
+                                 - noise_filter.a1 * noise_filter.y1 - noise_filter.a2 * noise_filter.y2;
+                noise_filter.x2 = noise_filter.x1;
+                noise_filter.x1 = raw_noise;
+                noise_filter.y2 = noise_filter.y1;
+                noise_filter.y1 = filtered;
+
+                int16_t noise = (int16_t)(filtered * 8000.0f * noise_level / 100.0f);
+                
+                int16_t s = 0;
+                if (key1_now || pb_tone_now) {
+                    s = sine_table[(int)phase & (SINE_TABLE_SIZE - 1)];
+                    phase += phase_step;
+                    if (phase >= SINE_TABLE_SIZE) phase -= SINE_TABLE_SIZE;
+                }
+                
+                buf[i * 2]     = s + noise;
+                buf[i * 2 + 1] = s + noise;
             }
         } else {
             memset(buf, 0, sizeof(buf));

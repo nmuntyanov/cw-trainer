@@ -106,7 +106,7 @@ static esp_err_t wifi_connect_post_handler(httpd_req_t *req)
 /* POST /api/settings - Update volume/freq */
 static esp_err_t settings_post_handler(httpd_req_t *req)
 {
-    char buf[128];
+    char buf[512];
     int ret = httpd_req_recv(req, buf, sizeof(buf)-1);
     if (ret <= 0) return ESP_FAIL;
     buf[ret] = '\0';
@@ -116,12 +116,19 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         cJSON *v = cJSON_GetObjectItem(root, "volume");
         cJSON *f = cJSON_GetObjectItem(root, "freq");
         cJSON *w = cJSON_GetObjectItem(root, "wpm");
+        cJSON *n = cJSON_GetObjectItem(root, "noise");
+        cJSON *cs = cJSON_GetObjectItem(root, "callsign");
+        cJSON *qth = cJSON_GetObjectItem(root, "qth");
         
-        uint8_t new_vol = v ? v->valueint : vol_val;
-        uint32_t new_freq = f ? f->valueint : freq;
-        uint32_t new_wpm = w ? w->valueint : wpm;
+        uint8_t new_vol = (v && cJSON_IsNumber(v)) ? v->valueint : vol_val;
+        uint32_t new_freq = (f && cJSON_IsNumber(f)) ? f->valueint : freq;
+        uint32_t new_wpm = (w && cJSON_IsNumber(w)) ? w->valueint : wpm;
+        uint8_t new_noise = (n && cJSON_IsNumber(n)) ? n->valueint : noise_level;
+        const char *new_cs = (cs && cJSON_IsString(cs)) ? cs->valuestring : NULL;
+        const char *new_qth = (qth && cJSON_IsString(qth)) ? qth->valuestring : NULL;
 
-        update_settings(new_freq, new_vol, new_wpm);
+        ESP_LOGI("web_server", "Settings: V=%d F=%"PRIu32" W=%"PRIu32" N=%d CS=%s QTH=%s", new_vol, new_freq, new_wpm, new_noise, new_cs?new_cs:"NULL", new_qth?new_qth:"NULL");
+        update_settings(new_freq, new_vol, new_wpm, new_noise, new_cs, new_qth);
         cJSON_Delete(root);
     }
     
@@ -139,6 +146,12 @@ static esp_err_t system_status_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "sta_ssid", ssid);
     cJSON_AddBoolToObject(root, "sta_connected", wifi_manager_is_connected());
     cJSON_AddBoolToObject(root, "ap_enabled", wifi_manager_is_ap_enabled());
+    cJSON_AddNumberToObject(root, "volume", vol_val);
+    cJSON_AddNumberToObject(root, "freq", freq);
+    cJSON_AddNumberToObject(root, "wpm", wpm);
+    cJSON_AddNumberToObject(root, "noise_level", noise_level);
+    cJSON_AddStringToObject(root, "callsign", callsign);
+    cJSON_AddStringToObject(root, "qth_locator", qth_locator);
     cJSON_AddStringToObject(root, "koch_chars", morse_logic_get_all_chars());
     
     const char *sys_info = cJSON_Print(root);
@@ -183,6 +196,24 @@ static esp_err_t training_play_post_handler(httpd_req_t *req)
     }
     cJSON_Delete(root);
     httpd_resp_sendstr(req, "{\"status\":\"playing\"}");
+    return ESP_OK;
+}
+
+/* POST /api/training/play_sequence - Play a string of characters */
+static esp_err_t training_play_sequence_post_handler(httpd_req_t *req)
+{
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf)-1);
+    if (ret <= 0) return ESP_FAIL;
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    cJSON *s_obj = cJSON_GetObjectItem(root, "sequence");
+    if (s_obj && s_obj->valuestring) {
+        trigger_playback_string(s_obj->valuestring);
+    }
+    cJSON_Delete(root);
+    httpd_resp_sendstr(req, "{\"status\":\"playing_sequence\"}");
     return ESP_OK;
 }
 
@@ -248,6 +279,9 @@ esp_err_t web_server_init(void)
 
         httpd_uri_t tr_target = { .uri = "/api/training/target", .method = HTTP_POST, .handler = training_target_post_handler };
         httpd_register_uri_handler(server, &tr_target);
+
+        httpd_uri_t tr_play_seq = { .uri = "/api/training/play_sequence", .method = HTTP_POST, .handler = training_play_sequence_post_handler };
+        httpd_register_uri_handler(server, &tr_play_seq);
 
         httpd_uri_t settings = { .uri = "/api/settings", .method = HTTP_POST, .handler = settings_post_handler };
         httpd_register_uri_handler(server, &settings);

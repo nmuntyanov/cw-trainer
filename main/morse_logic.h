@@ -21,6 +21,8 @@ typedef struct {
     int last_match_score;
 } morse_decoder_t;
 
+const char* morse_logic_get_current_bits(void);
+
 /**
  * @brief Initialize Morse Logic
  */

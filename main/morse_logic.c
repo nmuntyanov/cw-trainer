@@ -124,7 +124,7 @@ char morse_logic_handle_key(bool pressed, uint32_t now)
         // Release: end of a pulse.
         if (d.pulse_count < 8) d.pulse_durations[d.pulse_count++] = duration;
         
-        if (duration < d.dot_ms * 1.7) {
+        if (duration < d.dot_ms * 2.2) {
             if (d.seq_ptr < 7) d.current_sequence[d.seq_ptr++] = '.';
         } else {
             if (d.seq_ptr < 7) d.current_sequence[d.seq_ptr++] = '-';
@@ -205,4 +205,9 @@ const char* morse_logic_get_sequence(char c)
 const char* morse_logic_get_all_chars(void)
 {
     return KOCH_ORDER;
+}
+
+const char* morse_logic_get_current_bits(void)
+{
+    return d.current_sequence;
 }
